@@ -1,0 +1,17 @@
+syntax = "proto3";
+package md;
+
+message PingRequest { string message = 1; }
+message PingReply   { string message = 1; }
+
+message SubscribeRequest { string instrument_id = 1; }
+message Update {
+  string instrument_id = 1;
+  int64 ts_ms = 2;
+  double value = 3;
+}
+
+service MarketData {
+  rpc Ping (PingRequest) returns (PingReply);
+  rpc StreamPrices (SubscribeRequest) returns (stream Update);
+}
