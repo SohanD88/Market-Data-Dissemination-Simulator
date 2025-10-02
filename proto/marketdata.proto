@@ -5,10 +5,23 @@ message PingRequest { string message = 1; }
 message PingReply   { string message = 1; }
 
 message SubscribeRequest { string instrument_id = 1; }
-message Update {
+
+message Snapshot {
+  string instrument_id = 1;
+  repeated double prices = 2;
+}
+
+message Incremental {
   string instrument_id = 1;
   int64 ts_ms = 2;
-  double value = 3;
+  double value = 3; 
+}
+
+message Update {
+  oneof kind {
+    Snapshot snapshot = 1;
+    Incremental incremental = 2;
+  }
 }
 
 service MarketData {

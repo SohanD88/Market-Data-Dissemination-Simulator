@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x10marketdata.proto\x12\x02md\"\x1e\n\x0bPingRequest\x12\x0f\n\x07message\x18\x01 \x01(\t\"\x1c\n\tPingReply\x12\x0f\n\x07message\x18\x01 \x01(\t\")\n\x10SubscribeRequest\x12\x15\n\rinstrument_id\x18\x01 \x01(\t\"=\n\x06Update\x12\x15\n\rinstrument_id\x18\x01 \x01(\t\x12\r\n\x05ts_ms\x18\x02 \x01(\x03\x12\r\n\x05value\x18\x03 \x01(\x01\x32h\n\nMarketData\x12&\n\x04Ping\x12\x0f.md.PingRequest\x1a\r.md.PingReply\x12\x32\n\x0cStreamPrices\x12\x14.md.SubscribeRequest\x1a\n.md.Update0\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x10marketdata.proto\x12\x02md\"\x1e\n\x0bPingRequest\x12\x0f\n\x07message\x18\x01 \x01(\t\"\x1c\n\tPingReply\x12\x0f\n\x07message\x18\x01 \x01(\t\")\n\x10SubscribeRequest\x12\x15\n\rinstrument_id\x18\x01 \x01(\t\"1\n\x08Snapshot\x12\x15\n\rinstrument_id\x18\x01 \x01(\t\x12\x0e\n\x06prices\x18\x02 \x03(\x01\"B\n\x0bIncremental\x12\x15\n\rinstrument_id\x18\x01 \x01(\t\x12\r\n\x05ts_ms\x18\x02 \x01(\x03\x12\r\n\x05value\x18\x03 \x01(\x01\"Z\n\x06Update\x12 \n\x08snapshot\x18\x01 \x01(\x0b\x32\x0c.md.SnapshotH\x00\x12&\n\x0bincremental\x18\x02 \x01(\x0b\x32\x0f.md.IncrementalH\x00\x42\x06\n\x04kind2h\n\nMarketData\x12&\n\x04Ping\x12\x0f.md.PingRequest\x1a\r.md.PingReply\x12\x32\n\x0cStreamPrices\x12\x14.md.SubscribeRequest\x1a\n.md.Update0\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -37,8 +37,12 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_PINGREPLY']._serialized_end=84
   _globals['_SUBSCRIBEREQUEST']._serialized_start=86
   _globals['_SUBSCRIBEREQUEST']._serialized_end=127
-  _globals['_UPDATE']._serialized_start=129
-  _globals['_UPDATE']._serialized_end=190
-  _globals['_MARKETDATA']._serialized_start=192
-  _globals['_MARKETDATA']._serialized_end=296
+  _globals['_SNAPSHOT']._serialized_start=129
+  _globals['_SNAPSHOT']._serialized_end=178
+  _globals['_INCREMENTAL']._serialized_start=180
+  _globals['_INCREMENTAL']._serialized_end=246
+  _globals['_UPDATE']._serialized_start=248
+  _globals['_UPDATE']._serialized_end=338
+  _globals['_MARKETDATA']._serialized_start=340
+  _globals['_MARKETDATA']._serialized_end=444
 # @@protoc_insertion_point(module_scope)

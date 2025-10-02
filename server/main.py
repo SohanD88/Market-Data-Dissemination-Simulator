@@ -18,30 +18,37 @@ class MarketDataServicer(pb2_grpc.MarketDataServicer):
     def StreamPrices(self, request, context):
         instrument = request.instrument_id or "ES"
         print(f"[server] StreamPrices started for {instrument}")
-        value = random.uniform(100.0, 200.0)
+
+        snapshot_prices = [round(random.uniform(100, 200), 4) for i in range(5)]
+        yield pb2.Update(snapshot = pb2.Snapshot(instrument_id = instrument, prices = snapshot_prices))
+
+        value = snapshot_prices[-1]
+        count = 0
         while context.is_active():
             value = max(0.0, value + random.uniform(-0.5, 0.5))  # tiny random walk
             yield pb2.Update(
+                incremental = pb2.Incremental(
                 instrument_id=instrument,
                 ts_ms=int(time.time() * 1000),
-                value=float(f"{value:.4f}"),
-            )
+                value=value
+            ))
+            count += 1
             time.sleep(0.5)
-        print(f"[server] StreamPrices ended for {instrument}")
+
+            if count % 10 == 0:
+                snapshot_prices = [round(random.uniform(100, 200), 4) for i in range(5)]
+                yield pb2.Update(snapshot = pb2.Snapshot(instrument_id = instrument, prices = snapshot_prices))
 
 
-def serve(host: str = "127.0.0.1", port: int = 50051):
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
+
+
+def serve():
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers = 8))
     pb2_grpc.add_MarketDataServicer_to_server(MarketDataServicer(), server)
-    addr = f"{host}:{port}"
-    server.add_insecure_port(addr)
+    server.add_insecure_port("127.0.0.1:50051")
     server.start()
-    print(f"[server] running on {addr}")
-    try:
-        server.wait_for_termination()
-    except KeyboardInterrupt:
-        print("\n[server] shutting down...")
-
+    print("[server] running at 127.0.0.1:50051")
+    server.wait_for_termination()
 
 if __name__ == "__main__":
     serve()

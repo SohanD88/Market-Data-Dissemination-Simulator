@@ -2,16 +2,18 @@
 import argparse
 import threading
 import time
-from typing import Dict, Optional, List
-import grpc
+from typing import Dict, List, Optional
 import traceback
+import grpc
 
 from md import marketdata_pb2 as pb2
 from md import marketdata_pb2_grpc as pb2_grpc
 
 
+# ---- helpers ---------------------------------------------------------------
+
 def do_ping(stub: pb2_grpc.MarketDataStub) -> None:
-    """Send a simple Ping to confirm the server is reachable."""
+    """Quick connectivity check."""
     reply = stub.Ping(pb2.PingRequest(message="hello, server"))
     print(f"[client] ping reply: {reply.message}")
 
@@ -20,36 +22,53 @@ def stream_worker(
     stub: pb2_grpc.MarketDataStub,
     instrument: str,
     max_msgs: Optional[int],
-    state: Dict[str, float],
+    state: Dict[str, List[float]],
     lock: threading.Lock,
     stop_event: threading.Event,
+    keep_last: int = 5,
 ) -> None:
     """
-    Subscribe to one instrument and keep the latest value in `state`.
-    Exits cleanly when:
-      - max_msgs is reached, OR
-      - stop_event is set, OR
-      - channel is closed (CANCELLED at shutdown).
+    Subscribe to one instrument and keep its recent values in `state[instrument]`.
+    Handles Day-5 messages:
+      - Update{ snapshot { prices: [...] } }
+      - Update{ incremental { value: x } }
     """
     req = pb2.SubscribeRequest(instrument_id=instrument)
     count = 0
+
     try:
         call = stub.StreamPrices(req)
         for up in call:
             if stop_event.is_set():
-                # Ask gRPC to stop this stream; will raise CANCELLED
+                # Ask gRPC to tear down this stream (will raise CANCELLED).
                 try:
                     call.cancel()  # type: ignore[attr-defined]
                 except Exception:
                     pass
                 break
-            with lock:
-                state[up.instrument_id] = up.value
+
+            # --- Snapshot ---
+            if up.HasField("snapshot"):
+                prices = list(up.snapshot.prices)
+                with lock:
+                    state[instrument] = prices[-keep_last:] if keep_last else prices
+                print(f"[client][{instrument}] SNAPSHOT {state[instrument]}")
+
+            # --- Incremental ---
+            elif up.HasField("incremental"):
+                with lock:
+                    arr = state.get(instrument, [])
+                    arr.append(up.incremental.value)
+                    if keep_last and len(arr) > keep_last:
+                        arr = arr[-keep_last:]
+                    state[instrument] = arr
+
             count += 1
             if max_msgs and count >= max_msgs:
                 break
+
     except grpc.RpcError as e:
-        # During normal shutdown we expect CANCELLED when the channel closes.
+        # CANCELLED is expected if we shut the stream down intentionally.
         code = e.code() if hasattr(e, "code") else None
         if code != grpc.StatusCode.CANCELLED:
             print(f"[client][{instrument}] gRPC error: {e} (code={code})")
@@ -60,26 +79,40 @@ def stream_worker(
 
 
 def print_state_periodically(
-    state: Dict[str, float],
+    state: Dict[str, List[float]],
     lock: threading.Lock,
     instruments: List[str],
     interval: float,
     run_seconds: Optional[int],
     stop_event: threading.Event,
 ) -> None:
-    """Print a small table of latest values every `interval` seconds."""
+    """
+    Every `interval` seconds, print a small table of the latest values
+    for each instrument. Stops after `run_seconds` (if provided) or when
+    `stop_event` is set.
+    """
     t0 = time.time()
     while not stop_event.is_set():
         with lock:
-            lines = [f"{sym:>6}: {state.get(sym, float('nan')):.4f}" for sym in instruments]
-        print("\n[client] latest")
+            lines: List[str] = []
+            for sym in instruments:
+                latest_list = state.get(sym, [])
+                if latest_list:
+                    lines.append(f"{sym:>6}: {latest_list[-1]:.4f}")
+                else:
+                    lines.append(f"{sym:>6}: …")  # waiting for first update
+
+        print(f"\n[client] {time.strftime('%X')} latest")
         print("\n".join(lines))
+
         time.sleep(interval)
         if run_seconds and (time.time() - t0) >= run_seconds:
             break
-    # signal done (idempotent)
-    stop_event.set()
 
+    stop_event.set()  # idempotent
+
+
+# ---- main ------------------------------------------------------------------
 
 def main(
     host: str,
@@ -89,16 +122,15 @@ def main(
     run_seconds: Optional[int],
 ) -> None:
     addr = f"{host}:{port}"
-    state: Dict[str, float] = {}
+    state: Dict[str, List[float]] = {}  # instrument -> recent values
     lock = threading.Lock()
     stop_event = threading.Event()
 
-    # Open the channel for the whole session.
     with grpc.insecure_channel(addr) as channel:
         stub = pb2_grpc.MarketDataStub(channel)
         do_ping(stub)
 
-        # Start one worker per instrument (non-daemon so we can join)
+        # start one worker per instrument (non-daemon so we can join)
         threads: List[threading.Thread] = []
         for sym in instruments:
             th = threading.Thread(
@@ -109,18 +141,16 @@ def main(
             th.start()
             threads.append(th)
 
-        # Print the table for run_seconds (or until stop_event is set)
+        # print table periodically for N seconds (or until stop_event)
         print_state_periodically(
             state, lock, instruments,
             interval=1.0,
             run_seconds=run_seconds,
-            stop_event=stop_event
+            stop_event=stop_event,
         )
 
-        # Tell workers to stop if we had a timed run
+        # tell workers to stop and wait for them
         stop_event.set()
-
-        # Join all workers before leaving the channel context
         for th in threads:
             th.join()
 
