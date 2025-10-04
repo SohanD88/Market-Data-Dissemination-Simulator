@@ -30,7 +30,7 @@ def stream_worker(
     lock: threading.Lock,
     stop_event: threading.Event,
     keep_last: int = 5,
-    enqueue=None,   # ✅ new argument for logger
+    enqueue=None, 
 ) -> None:
     """Subscribe to one instrument and store/print updates."""
     req = pb2.SubscribeRequest(instrument_id=instrument)
@@ -131,14 +131,14 @@ def main(
     lock = threading.Lock()
     stop_event = threading.Event()
 
-    # ✅ 1. Start the logger
+    # Start the logger
     enqueue, stop_logger = start_logger("marketdata.db")
 
     with grpc.insecure_channel(addr) as channel:
         stub = pb2_grpc.MarketDataStub(channel)
         do_ping(stub)
 
-        # ✅ 2. Start one thread per instrument
+        # Start one thread per instrument
         threads: List[threading.Thread] = []
         for sym in instruments:
             th = threading.Thread(
@@ -150,7 +150,7 @@ def main(
             th.start()
             threads.append(th)
 
-        # ✅ 3. Display state periodically
+        # Display state periodically
         print_state_periodically(
             state, lock, instruments,
             interval=1.0,
@@ -158,12 +158,12 @@ def main(
             stop_event=stop_event,
         )
 
-        # ✅ 4. Clean shutdown
+        # Clean shutdown
         stop_event.set()
         for th in threads:
             th.join()
 
-    # ✅ 5. Stop the logger and flush to DB
+    #  Stop the logger and flush to DB
     stop_logger()
 
 
