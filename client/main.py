@@ -8,16 +8,20 @@ import grpc
 
 from md import marketdata_pb2 as pb2
 from md import marketdata_pb2_grpc as pb2_grpc
+from client.logger import start_logger   # ✅ new import for logging
 
 
-# ---- helpers ---------------------------------------------------------------
-
+# ---------------------------------------------------------------------------
+# Simple connectivity check
+# ---------------------------------------------------------------------------
 def do_ping(stub: pb2_grpc.MarketDataStub) -> None:
-    """Quick connectivity check."""
     reply = stub.Ping(pb2.PingRequest(message="hello, server"))
     print(f"[client] ping reply: {reply.message}")
 
 
+# ---------------------------------------------------------------------------
+# Worker that handles one instrument stream
+# ---------------------------------------------------------------------------
 def stream_worker(
     stub: pb2_grpc.MarketDataStub,
     instrument: str,
@@ -26,13 +30,9 @@ def stream_worker(
     lock: threading.Lock,
     stop_event: threading.Event,
     keep_last: int = 5,
+    enqueue=None,   # ✅ new argument for logger
 ) -> None:
-    """
-    Subscribe to one instrument and keep its recent values in `state[instrument]`.
-    Handles Day-5 messages:
-      - Update{ snapshot { prices: [...] } }
-      - Update{ incremental { value: x } }
-    """
+    """Subscribe to one instrument and store/print updates."""
     req = pb2.SubscribeRequest(instrument_id=instrument)
     count = 0
 
@@ -40,25 +40,32 @@ def stream_worker(
         call = stub.StreamPrices(req)
         for up in call:
             if stop_event.is_set():
-                # Ask gRPC to tear down this stream (will raise CANCELLED).
                 try:
-                    call.cancel()  # type: ignore[attr-defined]
+                    call.cancel()  # close stream cleanly
                 except Exception:
                     pass
                 break
 
-            # --- Snapshot ---
+            # --- Snapshot message ---
             if up.HasField("snapshot"):
                 prices = list(up.snapshot.prices)
+                ts_ms = int(time.time() * 1000)  # snapshot doesn't carry ts
+                if enqueue:
+                    for p in prices:
+                        enqueue((instrument, ts_ms, "snapshot", float(p)))
                 with lock:
                     state[instrument] = prices[-keep_last:] if keep_last else prices
                 print(f"[client][{instrument}] SNAPSHOT {state[instrument]}")
 
-            # --- Incremental ---
+            # --- Incremental message ---
             elif up.HasField("incremental"):
+                ts_ms = up.incremental.ts_ms
+                val = float(up.incremental.value)
+                if enqueue:
+                    enqueue((instrument, ts_ms, "incremental", val))
                 with lock:
                     arr = state.get(instrument, [])
-                    arr.append(up.incremental.value)
+                    arr.append(val)
                     if keep_last and len(arr) > keep_last:
                         arr = arr[-keep_last:]
                     state[instrument] = arr
@@ -68,7 +75,6 @@ def stream_worker(
                 break
 
     except grpc.RpcError as e:
-        # CANCELLED is expected if we shut the stream down intentionally.
         code = e.code() if hasattr(e, "code") else None
         if code != grpc.StatusCode.CANCELLED:
             print(f"[client][{instrument}] gRPC error: {e} (code={code})")
@@ -78,6 +84,9 @@ def stream_worker(
         traceback.print_exc()
 
 
+# ---------------------------------------------------------------------------
+# Periodic table printer
+# ---------------------------------------------------------------------------
 def print_state_periodically(
     state: Dict[str, List[float]],
     lock: threading.Lock,
@@ -86,21 +95,16 @@ def print_state_periodically(
     run_seconds: Optional[int],
     stop_event: threading.Event,
 ) -> None:
-    """
-    Every `interval` seconds, print a small table of the latest values
-    for each instrument. Stops after `run_seconds` (if provided) or when
-    `stop_event` is set.
-    """
     t0 = time.time()
     while not stop_event.is_set():
         with lock:
             lines: List[str] = []
             for sym in instruments:
-                latest_list = state.get(sym, [])
-                if latest_list:
-                    lines.append(f"{sym:>6}: {latest_list[-1]:.4f}")
+                latest = state.get(sym, [])
+                if latest:
+                    lines.append(f"{sym:>6}: {latest[-1]:.4f}")
                 else:
-                    lines.append(f"{sym:>6}: …")  # waiting for first update
+                    lines.append(f"{sym:>6}: …")
 
         print(f"\n[client] {time.strftime('%X')} latest")
         print("\n".join(lines))
@@ -109,11 +113,12 @@ def print_state_periodically(
         if run_seconds and (time.time() - t0) >= run_seconds:
             break
 
-    stop_event.set()  # idempotent
+    stop_event.set()
 
 
-# ---- main ------------------------------------------------------------------
-
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 def main(
     host: str,
     port: int,
@@ -122,26 +127,30 @@ def main(
     run_seconds: Optional[int],
 ) -> None:
     addr = f"{host}:{port}"
-    state: Dict[str, List[float]] = {}  # instrument -> recent values
+    state: Dict[str, List[float]] = {}
     lock = threading.Lock()
     stop_event = threading.Event()
+
+    # ✅ 1. Start the logger
+    enqueue, stop_logger = start_logger("marketdata.db")
 
     with grpc.insecure_channel(addr) as channel:
         stub = pb2_grpc.MarketDataStub(channel)
         do_ping(stub)
 
-        # start one worker per instrument (non-daemon so we can join)
+        # ✅ 2. Start one thread per instrument
         threads: List[threading.Thread] = []
         for sym in instruments:
             th = threading.Thread(
                 target=stream_worker,
                 args=(stub, sym, max_msgs, state, lock, stop_event),
+                kwargs={"enqueue": enqueue},   # pass logger
                 daemon=False,
             )
             th.start()
             threads.append(th)
 
-        # print table periodically for N seconds (or until stop_event)
+        # ✅ 3. Display state periodically
         print_state_periodically(
             state, lock, instruments,
             interval=1.0,
@@ -149,12 +158,18 @@ def main(
             stop_event=stop_event,
         )
 
-        # tell workers to stop and wait for them
+        # ✅ 4. Clean shutdown
         stop_event.set()
         for th in threads:
             th.join()
 
+    # ✅ 5. Stop the logger and flush to DB
+    stop_logger()
 
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")
@@ -162,10 +177,10 @@ if __name__ == "__main__":
     ap.add_argument(
         "--instruments",
         default="ES,NQ",
-        help="Comma-separated list, e.g. ES,NQ,CL",
+        help="Comma-separated list of instruments (e.g., ES,NQ,CL)",
     )
-    ap.add_argument("--max-msgs", type=int, default=0, help="0 = infinite per instrument")
-    ap.add_argument("--seconds", type=int, default=8, help="0 = run until streams end")
+    ap.add_argument("--max-msgs", type=int, default=0, help="0 = unlimited per instrument")
+    ap.add_argument("--seconds", type=int, default=8, help="0 = run until stopped")
     args = ap.parse_args()
 
     instruments: List[str] = [s.strip() for s in args.instruments.split(",") if s.strip()]
