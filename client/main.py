@@ -8,7 +8,8 @@ import grpc
 
 from md import marketdata_pb2 as pb2
 from md import marketdata_pb2_grpc as pb2_grpc
-from client.logger import start_logger   # ✅ new import for logging
+from client.logger import start_logger
+from client.live_plot import start_plot  # <-- use this, runs on MAIN thread
 
 
 # ---------------------------------------------------------------------------
@@ -30,7 +31,7 @@ def stream_worker(
     lock: threading.Lock,
     stop_event: threading.Event,
     keep_last: int = 5,
-    enqueue=None, 
+    enqueue=None,
 ) -> None:
     """Subscribe to one instrument and store/print updates."""
     req = pb2.SubscribeRequest(instrument_id=instrument)
@@ -85,7 +86,7 @@ def stream_worker(
 
 
 # ---------------------------------------------------------------------------
-# Periodic table printer
+# Periodic table printer (runs in background so GUI can own main thread)
 # ---------------------------------------------------------------------------
 def print_state_periodically(
     state: Dict[str, List[float]],
@@ -112,8 +113,7 @@ def print_state_periodically(
         time.sleep(interval)
         if run_seconds and (time.time() - t0) >= run_seconds:
             break
-
-    stop_event.set()
+    # don't set stop_event here; GUI controls overall shutdown
 
 
 # ---------------------------------------------------------------------------
@@ -150,20 +150,32 @@ def main(
             th.start()
             threads.append(th)
 
-        # Display state periodically
-        print_state_periodically(
-            state, lock, instruments,
-            interval=1.0,
-            run_seconds=run_seconds,
+        # Start console printer in background so the GUI can own the main thread
+        printer = threading.Thread(
+            target=print_state_periodically,
+            args=(state, lock, instruments, 1.0, run_seconds, stop_event),
+            daemon=True,
+        )
+        printer.start()
+
+        # ✅ Run the Matplotlib GUI on the MAIN thread (required on macOS)
+        start_plot(
+            state=state,
+            lock=lock,
+            instruments=instruments,
             stop_event=stop_event,
+            interval_ms=500,
+            window_points=200,     # try 200–500 for a nice scroll
+            auto_close=False,      # keep window open until you close it
+            run_seconds=None,  # window auto-closes after N seconds
         )
 
-        # Clean shutdown
+        # After the window closes, finish cleanly
         stop_event.set()
         for th in threads:
             th.join()
 
-    #  Stop the logger and flush to DB
+    # Stop the logger and flush to DB
     stop_logger()
 
 
@@ -180,7 +192,7 @@ if __name__ == "__main__":
         help="Comma-separated list of instruments (e.g., ES,NQ,CL)",
     )
     ap.add_argument("--max-msgs", type=int, default=0, help="0 = unlimited per instrument")
-    ap.add_argument("--seconds", type=int, default=8, help="0 = run until stopped")
+    ap.add_argument("--seconds", type=int, default=15, help="0 = run until stopped")
     args = ap.parse_args()
 
     instruments: List[str] = [s.strip() for s in args.instruments.split(",") if s.strip()]
